@@ -12,6 +12,14 @@ stdenv.mkDerivation rec {
 
   buildInputs = [ gdal grib-api ];
 
+  doCheck = true;
+
+  checkPhase = ''
+    export GDAL_SKIP=GRIB
+    export GDAL_DRIVER_PATH="$(pwd)"
+    gdalinfo --formats | grep GRIBAPI
+    '';
+
   meta = {
     description = "GDAL plugin to read GRIB files with grib_api";
     homepage = https://github.com/meteogrid/gdal_gribapi;

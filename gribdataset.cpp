@@ -33,27 +33,30 @@
 #include "gdal_frmts.h"
 #include "gdal_pam.h"
 #include "ogr_spatialref.h"
-#include "gribdataset.h"
 
 #include <algorithm>
 
 CPL_CVSID("$Id$");
 
+CPL_C_START
+void GDALRegister_GRIBAPI();
+CPL_C_END
+
 /************************************************************************/
 /* ==================================================================== */
-/*                              GRIB2Dataset                             */
+/*                              GRIBAPIDataset                             */
 /* ==================================================================== */
 /************************************************************************/
 
-class GRIB2RasterBand;
+class GRIBAPIRasterBand;
 
-class GRIB2Dataset : public GDALPamDataset
+class GRIBAPIDataset : public GDALPamDataset
 {
-    friend class GRIB2RasterBand;
+    friend class GRIBAPIRasterBand;
 
   public:
-                GRIB2Dataset();
-                ~GRIB2Dataset();
+                GRIBAPIDataset();
+                ~GRIBAPIDataset();
 
     static GDALDataset *Open( GDALOpenInfo * );
     static int          Identify( GDALOpenInfo * );
@@ -70,17 +73,17 @@ class GRIB2Dataset : public GDALPamDataset
 
 /************************************************************************/
 /* ==================================================================== */
-/*                            GRIB2RasterBand                             */
+/*                            GRIBAPIRasterBand                             */
 /* ==================================================================== */
 /************************************************************************/
 
-class GRIB2RasterBand : public GDALPamRasterBand
+class GRIBAPIRasterBand : public GDALPamRasterBand
 {
-    friend class GRIB2Dataset;
+    friend class GRIBAPIDataset;
 
 public:
-    GRIB2RasterBand( GRIB2Dataset *poDSIn, grib_handle *h );
-    virtual ~GRIB2RasterBand();
+    GRIBAPIRasterBand( GRIBAPIDataset *poDSIn, grib_handle *h );
+    virtual ~GRIBAPIRasterBand();
     virtual CPLErr IReadBlock( int, int, void * );
     virtual const char *GetDescription() const;
     virtual double GetNoDataValue( int *pbSuccess = NULL );
@@ -107,10 +110,10 @@ private:
 
 
 /************************************************************************/
-/*                           GRIB2RasterBand()                            */
+/*                           GRIBAPIRasterBand()                            */
 /************************************************************************/
 
-GRIB2RasterBand::GRIB2RasterBand( GRIB2Dataset *poDSIn, grib_handle *handleIn ):
+GRIBAPIRasterBand::GRIBAPIRasterBand( GRIBAPIDataset *poDSIn, grib_handle *handleIn ):
   handle(handleIn)
 {
   lastError = GRIB_SUCCESS;
@@ -122,7 +125,7 @@ GRIB2RasterBand::GRIB2RasterBand( GRIB2Dataset *poDSIn, grib_handle *handleIn ):
   /*
     nBand = nBandIn;
 
-    // Let user do -ot Float32 if needed for saving space, GRIB2 contains
+    // Let user do -ot Float32 if needed for saving space, GRIBAPI contains
     // Float64 (though not fully utilized most of the time).
     eDataType = GDT_Float64;
 
@@ -153,7 +156,7 @@ GRIB2RasterBand::GRIB2RasterBand( GRIB2Dataset *poDSIn, grib_handle *handleIn ):
 /*                         GetDescription()                             */
 /************************************************************************/
 
-const char * GRIB2RasterBand::GetDescription() const
+const char * GRIBAPIRasterBand::GetDescription() const
 {
     return GDALPamRasterBand::GetDescription();
 }
@@ -163,7 +166,7 @@ const char * GRIB2RasterBand::GetDescription() const
 /*                             IReadBlock()                             */
 /************************************************************************/
 
-CPLErr GRIB2RasterBand::IReadBlock( int /* nBlockXOff */,
+CPLErr GRIBAPIRasterBand::IReadBlock( int /* nBlockXOff */,
                                    int nBlockYOff,
                                    void * pImage )
 
@@ -175,27 +178,27 @@ CPLErr GRIB2RasterBand::IReadBlock( int /* nBlockXOff */,
 /*                           GetNoDataValue()                           */
 /************************************************************************/
 
-double GRIB2RasterBand::GetNoDataValue( int *pbSuccess )
+double GRIBAPIRasterBand::GetNoDataValue( int *pbSuccess )
 {
     *pbSuccess = FALSE;
     return 0;
 }
 
 /************************************************************************/
-/*                           ~GRIB2RasterBand()                          */
+/*                           ~GRIBAPIRasterBand()                          */
 /************************************************************************/
 
-GRIB2RasterBand::~GRIB2RasterBand()
+GRIBAPIRasterBand::~GRIBAPIRasterBand()
 {
 }
 
 /************************************************************************/
 /* ==================================================================== */
-/*                              GRIB2Dataset                             */
+/*                              GRIBAPIDataset                             */
 /* ==================================================================== */
 /************************************************************************/
 
-GRIB2Dataset::GRIB2Dataset():
+GRIBAPIDataset::GRIBAPIDataset():
   fp(0),
   ctx(0),
   pszProjection(0)
@@ -209,10 +212,10 @@ GRIB2Dataset::GRIB2Dataset():
 }
 
 /************************************************************************/
-/*                            ~GRIB2Dataset()                             */
+/*                            ~GRIBAPIDataset()                             */
 /************************************************************************/
 
-GRIB2Dataset::~GRIB2Dataset()
+GRIBAPIDataset::~GRIBAPIDataset()
 
 {
     FlushCache();
@@ -229,7 +232,7 @@ GRIB2Dataset::~GRIB2Dataset()
 /*                          GetGeoTransform()                           */
 /************************************************************************/
 
-CPLErr GRIB2Dataset::GetGeoTransform( double * padfTransform )
+CPLErr GRIBAPIDataset::GetGeoTransform( double * padfTransform )
 
 {
     memcpy( padfTransform,  adfGeoTransform, sizeof(double) * 6 );
@@ -240,7 +243,7 @@ CPLErr GRIB2Dataset::GetGeoTransform( double * padfTransform )
 /*                          GetProjectionRef()                          */
 /************************************************************************/
 
-const char *GRIB2Dataset::GetProjectionRef()
+const char *GRIBAPIDataset::GetProjectionRef()
 
 {
     return pszProjection;
@@ -250,7 +253,7 @@ const char *GRIB2Dataset::GetProjectionRef()
 /*                            Identify()                                */
 /************************************************************************/
 
-int GRIB2Dataset::Identify( GDALOpenInfo * poOpenInfo )
+int GRIBAPIDataset::Identify( GDALOpenInfo * poOpenInfo )
 {
     if (poOpenInfo->nHeaderBytes < 8)
         return FALSE;
@@ -272,7 +275,7 @@ int GRIB2Dataset::Identify( GDALOpenInfo * poOpenInfo )
 /*                                Open()                                */
 /************************************************************************/
 
-GDALDataset *GRIB2Dataset::Open( GDALOpenInfo * poOpenInfo )
+GDALDataset *GRIBAPIDataset::Open( GDALOpenInfo * poOpenInfo )
 
 {
     if( !Identify(poOpenInfo) )
@@ -284,14 +287,14 @@ GDALDataset *GRIB2Dataset::Open( GDALOpenInfo * poOpenInfo )
     if( poOpenInfo->eAccess == GA_Update )
     {
         CPLError( CE_Failure, CPLE_NotSupported,
-                  "The GRIB2 driver does not support update access to existing"
+                  "The GRIBAPI driver does not support update access to existing"
                   " datasets.\n" );
         return NULL;
     }
 /* -------------------------------------------------------------------- */
 /*      Create a corresponding GDALDataset.                             */
 /* -------------------------------------------------------------------- */
-    GRIB2Dataset *poDS = new GRIB2Dataset();
+    GRIBAPIDataset *poDS = new GRIBAPIDataset();
 
     poDS->fp = fopen(poOpenInfo->pszFilename, "r"); 
 
@@ -319,11 +322,11 @@ GDALDataset *GRIB2Dataset::Open( GDALOpenInfo * poOpenInfo )
 /* -------------------------------------------------------------------- */
     int err;
     int bandNr = 1;
-    GRIB2RasterBand *fstBand = NULL;
+    GRIBAPIRasterBand *fstBand = NULL;
 
     grib_handle *h = grib_handle_new_from_file(poDS->ctx, poDS->fp, &err);
     if ( err != GRIB_SUCCESS ) goto open_error;
-    fstBand = new GRIB2RasterBand ( poDS, h);
+    fstBand = new GRIBAPIRasterBand ( poDS, h);
     if ( ( err = fstBand->lastError) != GRIB_SUCCESS ) {
       delete fstBand;
       goto open_error;
@@ -331,7 +334,7 @@ GDALDataset *GRIB2Dataset::Open( GDALOpenInfo * poOpenInfo )
 
     while ( ( h = grib_handle_new_from_file(poDS->ctx, poDS->fp, &err) ) != NULL ) {
       if ( err != GRIB_SUCCESS ) goto open_error;
-      GRIB2RasterBand *band = new GRIB2RasterBand ( poDS, h );
+      GRIBAPIRasterBand *band = new GRIBAPIRasterBand ( poDS, h );
       if ( ( err = band->lastError ) != GRIB_SUCCESS ) {
         if ( bandNr == 1 ) {
           delete fstBand;
@@ -388,7 +391,7 @@ open_error:
 /************************************************************************/
 
 /*
-void GRIB2Dataset::SetGribMetaData(grib_MetaData* meta)
+void GRIBAPIDataset::SetGribMetaData(grib_MetaData* meta)
 {
     nRasterXSize = meta->gds.Nx;
     nRasterYSize = meta->gds.Ny;
@@ -496,7 +499,7 @@ void GRIB2Dataset::SetGribMetaData(grib_MetaData* meta)
         if( (poTransformLLtoSRS != NULL) &&
             poTransformLLtoSRS->Transform( 1, &rMinX, &rMaxY ))
         {
-            if (meta->gds.scan == GRIB2BIT_2) // Y is minY, GDAL wants maxY
+            if (meta->gds.scan == GRIBAPIBIT_2) // Y is minY, GDAL wants maxY
             {
                 // -1 because we GDAL needs the coordinates of the centre of
                 // the pixel.
@@ -579,35 +582,35 @@ void GRIB2Dataset::SetGribMetaData(grib_MetaData* meta)
 */
 
 /************************************************************************/
-/*                       GDALDeregister_GRIB2()                          */
+/*                       GDALDeregister_GRIBAPI()                          */
 /************************************************************************/
 
-static void GDALDeregister_GRIB2(GDALDriver* )
+static void GDALDeregister_GRIBAPI(GDALDriver* )
 {
 }
 
 /************************************************************************/
-/*                         GDALRegister_GRIB2()                          */
+/*                         GDALRegister_GRIBAPI()                          */
 /************************************************************************/
 
-void GDALRegister_GRIB2()
+void GDALRegister_GRIBAPI()
 
 {
-    if( GDALGetDriverByName( "GRIB2" ) != NULL )
+    if( GDALGetDriverByName( "GRIBAPI" ) != NULL )
         return;
 
     GDALDriver *poDriver = new GDALDriver();
 
-    poDriver->SetDescription( "GRIB2" );
+    poDriver->SetDescription( "GRIBAPI" );
     poDriver->SetMetadataItem( GDAL_DCAP_RASTER, "YES" );
     poDriver->SetMetadataItem( GDAL_DMD_LONGNAME, "GRIdded Binary (.grb)" );
     poDriver->SetMetadataItem( GDAL_DMD_HELPTOPIC, "frmt_grib2.html" );
     poDriver->SetMetadataItem( GDAL_DMD_EXTENSION, "grb" );
     //poDriver->SetMetadataItem( GDAL_DCAP_VIRTUALIO, "YES" );
 
-    poDriver->pfnOpen = GRIB2Dataset::Open;
-    poDriver->pfnIdentify = GRIB2Dataset::Identify;
-    poDriver->pfnUnloadDriver = GDALDeregister_GRIB2;
+    poDriver->pfnOpen = GRIBAPIDataset::Open;
+    poDriver->pfnIdentify = GRIBAPIDataset::Identify;
+    poDriver->pfnUnloadDriver = GDALDeregister_GRIBAPI;
 
     GetGDALDriverManager()->RegisterDriver( poDriver );
 }
