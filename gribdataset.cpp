@@ -102,8 +102,6 @@ public:
 private:
   grib_handle*  handle;
 
-  int lastError;
-
   long nX, nY;
 
   CPLErr GetGeoTransform (double (&padfTransform)[6]) const;
@@ -169,12 +167,13 @@ GRIBAPIRasterBand::GRIBAPIRasterBand(
     GRIBAPIDataset *poDSIn, int nBandIn, grib_handle *handleIn ):
   handle(handleIn)
 {
-  lastError = GRIB_SUCCESS;
+  int err = GRIB_SUCCESS;
   poDS = poDSIn;
   nBand = nBandIn;
 
-  nX = nBlockXSize = GetLong( "Ni", &lastError );
-  nY = nBlockYSize = GetLong( "Nj", &lastError );
+  // cant really handle errors here
+  nX = nBlockXSize = GetLong( "Ni", &err );
+  nY = nBlockYSize = GetLong( "Nj", &err );
   eDataType = GDT_Float64;
 
 }
@@ -550,7 +549,7 @@ GDALDataset *GRIBAPIDataset::Open( GDALOpenInfo * poOpenInfo )
     if ( !GRIBAPIRasterBand::allSameSize ( bands ) ) {
       CPLError( CE_Warning, CPLE_AppDefined,
                 "GRIBAPI: First message differs in size from the next. "
-                "I will try to skip it.\n"
+                "I will skip it.\n"
                 );
       delete bands[0];
       bands.erase( bands.begin() );
