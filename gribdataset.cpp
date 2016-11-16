@@ -266,14 +266,15 @@ CPLErr GRIBAPIRasterBand::GetGeoTransform (double (&padfTransform)[6]) const
   if (err) return CE_Failure;
 
   double rPixelSizeX = 0.0;
-  double rPixelSizeY = 0.0;
 
   if ( nX == 1 )
-    rPixelSizeX = GetDouble( "iDirectionIncrementInDegrees", &err );
+    rPixelSizeX = dlon;
   else if (lon1 > lon2)
     rPixelSizeX = (360.0 - (lon1 - lon2)) / (nX - 1);
   else
     rPixelSizeX = (lon2 - lon1) / (nX - 1);
+
+  double rPixelSizeY = 0.0;
 
   if( nY == 1 )
       rPixelSizeY = dlat;
