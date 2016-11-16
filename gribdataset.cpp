@@ -34,7 +34,13 @@
 #include "gdal_pam.h"
 #include "ogr_spatialref.h"
 
+#include <sstream>
+#include <string>
+#include <vector>
 #include <algorithm>
+
+#define MAX_KEY_LEN  255
+#define MAX_VAL_LEN  1024
 
 CPL_CVSID("$Id$");
 
@@ -65,6 +71,10 @@ class GRIBAPIDataset : public GDALPamDataset
     const char *GetProjectionRef();
 
   private:
+    CPLErr LoadMetaData();
+
+    GRIBAPIRasterBand *GetGribBand ( const int i );
+
     FILE  *fp;
     grib_context *ctx;
     char  *pszProjection;
@@ -82,30 +92,72 @@ class GRIBAPIRasterBand : public GDALPamRasterBand
     friend class GRIBAPIDataset;
 
 public:
-    GRIBAPIRasterBand( GRIBAPIDataset *poDSIn, grib_handle *h );
-    virtual ~GRIBAPIRasterBand();
-    virtual CPLErr IReadBlock( int, int, void * );
-    virtual const char *GetDescription() const;
-    virtual double GetNoDataValue( int *pbSuccess = NULL );
+  GRIBAPIRasterBand( GRIBAPIDataset *, int, grib_handle * );
+  virtual ~GRIBAPIRasterBand();
+  virtual CPLErr IReadBlock( int, int, void * );
+  virtual const char *GetDescription() const;
+  virtual double GetNoDataValue( int *pbSuccess = NULL );
+
 
 private:
-    grib_handle*  handle;
+  grib_handle*  handle;
 
-    int lastError;
+  int lastError;
 
-    long nX, nY;
+  long nX, nY;
 
-    double GetDouble ( const char *key, int *err ) const {
-      double ret;
-      *err = grib_get_double ( handle, key, &ret );
-      return ret;
+  CPLErr GetGeoTransform (double (&padfTransform)[6]) const;
+
+  CPLErr LoadMetaData( const char* name_space );
+  CPLErr LoadMetaData( ) { return LoadMetaData ( NULL ); }
+
+  double GetDouble ( const char *key, int *err ) const {
+    double ret;
+    *err = grib_get_double ( handle, key, &ret );
+    if ( *err != GRIB_SUCCESS ) {
+      CPLError( CE_Failure, CPLE_AppDefined,
+                "GetDouble(%s) failed: %s\n", key,
+                grib_get_error_message(*err) );
     }
+    return ret;
+  }
 
-    long GetLong ( const char *key, int *err ) const {
-      long ret;
-      *err = grib_get_long ( handle, key, &ret );
-      return ret;
+  long GetLong ( const char *key, int *err ) const {
+    long ret;
+    *err = grib_get_long ( handle, key, &ret );
+    if ( *err != GRIB_SUCCESS ) {
+      CPLError( CE_Failure, CPLE_AppDefined,
+                "GetLong(%s) failed: %s\n", key,
+                grib_get_error_message(*err) );
     }
+    return ret;
+  }
+
+  int GetString ( const char *key, char *value, size_t *vlen ) const {
+    int err;
+    err = grib_get_string ( handle, key, value, vlen );
+    if ( err != GRIB_SUCCESS ) {
+      CPLError( CE_Failure, CPLE_AppDefined,
+                "GetString(%s) failed: %s\n", key,
+                grib_get_error_message(err) );
+    }
+    return err;
+  }
+
+  typedef std::vector<GRIBAPIRasterBand*>::const_iterator const_band_iterator;
+
+  static bool allSameSize (const std::vector<GRIBAPIRasterBand*>& bands)
+  {
+    GRIBAPIRasterBand::const_band_iterator it = bands.begin();
+    GRIBAPIRasterBand *fst = *(it++);
+    for ( ; it < bands.end(); it++ ) {
+      if ( (*it)->nX != fst->nX || (*it)->nY != fst->nY ) {
+        return false;
+      }
+    }
+    return true;
+  }
+
 };
 
 
@@ -113,42 +165,50 @@ private:
 /*                           GRIBAPIRasterBand()                            */
 /************************************************************************/
 
-GRIBAPIRasterBand::GRIBAPIRasterBand( GRIBAPIDataset *poDSIn, grib_handle *handleIn ):
+GRIBAPIRasterBand::GRIBAPIRasterBand(
+    GRIBAPIDataset *poDSIn, int nBandIn, grib_handle *handleIn ):
   handle(handleIn)
 {
   lastError = GRIB_SUCCESS;
   poDS = poDSIn;
+  nBand = nBandIn;
 
-  nX = GetLong( "numberOfPointsAlongAParallel", &lastError );
-  nY = GetLong( "numberOfPointsAlongAMeridian", &lastError );
+  nX = nBlockXSize = GetLong( "Ni", &lastError );
+  nY = nBlockYSize = GetLong( "Nj", &lastError );
+  eDataType = GDT_Float64;
 
-  /*
-    nBand = nBandIn;
+}
 
-    // Let user do -ot Float32 if needed for saving space, GRIBAPI contains
-    // Float64 (though not fully utilized most of the time).
-    eDataType = GDT_Float64;
-
-    nBlockXSize = poDSIn->nRasterXSize;
-    nBlockYSize = 1;
-
-    const char* pszGribNormalizeUnits =
-        CPLGetConfigOption("GRIB_NORMALIZE_UNITS", "YES");
-    bool bMetricUnits = CPLTestBool(pszGribNormalizeUnits);
-
-    SetMetadataItem( "GRIB_UNIT",
-                     ConvertUnitInText(bMetricUnits, psInv->unitName) );
-    SetMetadataItem( "GRIB_COMMENT",
-                     ConvertUnitInText(bMetricUnits, psInv->comment) );
-    SetMetadataItem( "GRIB_ELEMENT", psInv->element );
-    SetMetadataItem( "GRIB_SHORT_NAME", psInv->shortFstLevel );
-    SetMetadataItem( "GRIB_REF_TIME",
-                     CPLString().Printf("%12.0f sec UTC", psInv->refTime ) );
-    SetMetadataItem( "GRIB_VALID_TIME",
-                     CPLString().Printf("%12.0f sec UTC", psInv->validTime ) );
-    SetMetadataItem( "GRIB_FORECAST_SECONDS",
-                     CPLString().Printf("%.0f sec", psInv->foreSec ) );
-  */
+/************************************************************************/
+/*                         LoadMetaData()                               */
+/************************************************************************/
+CPLErr GRIBAPIRasterBand::LoadMetaData( const char *name_space )
+{
+  grib_keys_iterator* kiter =
+    grib_keys_iterator_new( handle, GRIB_KEYS_ITERATOR_ALL_KEYS, name_space );
+  if ( !kiter ) {
+    CPLError( CE_Failure, CPLE_OpenFailed,
+              "GRIBAPI: grib_keys_iterator_new returned NULL\n" );
+    return CE_Failure;
+  }
+  while( grib_keys_iterator_next( kiter ) ) {
+    char value[MAX_VAL_LEN];
+    const char* name = grib_keys_iterator_get_name(kiter);
+    size_t vlen = MAX_VAL_LEN;
+    if ( GRIB_SUCCESS == GetString ( name, value, &vlen ) ) {
+      std::ostringstream key;
+      key << "GRIB_";
+      if ( name_space ) {
+        std::string ns( name_space );
+        std::transform(ns.begin(), ns.end(), ns.begin(), ::toupper);
+        key << ns << "_";
+      }
+      key << name;
+      SetMetadataItem ( key.str().c_str(), value );
+    }
+  }
+  grib_keys_iterator_delete ( kiter );
+  return CE_None;
 }
 
 
@@ -161,16 +221,126 @@ const char * GRIBAPIRasterBand::GetDescription() const
     return GDALPamRasterBand::GetDescription();
 }
 
+static inline double degToRad(double a) {
+  return a * M_PI / 180;
+}
+
+/************************************************************************/
+/*                         GetGeoTransform()                             */
+/************************************************************************/
+CPLErr GRIBAPIRasterBand::GetGeoTransform (double (&padfTransform)[6]) const
+{
+  int err;
+  const double degRot = GetDouble( "angleOfRotationInDegrees", &err );
+  if (err) return CE_Failure;
+  if ( degRot != 0 ) {
+    CPLError( CE_Warning, CPLE_NotSupported,
+              "The GRIBAPI driver does not support yet "
+              "datasets with rotation.\n" );
+  }
+  //
+  // Longitude in degrees, to be transformed to meters (or degrees in
+  // case of latlon).
+  const double lon1 = GetDouble( "longitudeOfFirstGridPointInDegrees", &err );
+  if (err) return CE_Failure;
+
+  const double lon2 = GetDouble( "longitudeOfLastGridPointInDegrees", &err );
+  if (err) return CE_Failure;
+
+  const double lat1 = GetDouble( "latitudeOfFirstGridPointInDegrees", &err );
+  if (err) return CE_Failure;
+
+  const double lat2 = GetDouble( "latitudeOfLastGridPointInDegrees", &err );
+  if (err) return CE_Failure;
+
+  const double dlon = GetDouble( "iDirectionIncrementInDegrees", &err );
+  if (err) return CE_Failure;
+
+  const double dlat = GetDouble( "jDirectionIncrementInDegrees", &err );
+  if (err) return CE_Failure;
+
+  const bool iScansPos = GetLong( "iScansPositively", &err );
+  if (err) return CE_Failure;
+
+  const bool jScansPos = GetLong( "jScansPositively", &err );
+  if (err) return CE_Failure;
+
+  double rPixelSizeX = 0.0;
+  double rPixelSizeY = 0.0;
+
+  if ( nX == 1 )
+    rPixelSizeX = GetDouble( "iDirectionIncrementInDegrees", &err );
+  else if (lon1 > lon2)
+    rPixelSizeX = (360.0 - (lon1 - lon2)) / (nX - 1);
+  else
+    rPixelSizeX = (lon2 - lon1) / (nX - 1);
+
+  if( nY == 1 )
+      rPixelSizeY = dlat;
+  else if (lat1 > lat2)
+      rPixelSizeY = (lat1 - lat2) / (nY - 1);
+  else
+      rPixelSizeY = (lat2 - lat1) / (nY - 1);
+
+  // Do some sanity checks for cases that can't be handled by the above
+  // pixel size corrections. GRIB1 has a minimum precision of 0.001
+  // for latitudes and longitudes, so we'll allow a bit higher than that.
+  if (rPixelSizeX < 0 || fabs(rPixelSizeX - dlon) > 0.002)
+    rPixelSizeX = dlon;
+
+  if (!iScansPos)
+    rPixelSizeX *= -1;
+
+  if (rPixelSizeY < 0 || fabs(rPixelSizeY - dlat) > 0.002)
+    rPixelSizeY = dlat;
+
+  if (!jScansPos)
+    rPixelSizeY *= -1;
+
+  // move to center of pixel
+
+  padfTransform[0] = lon1 - rPixelSizeX/2;
+  padfTransform[1] = rPixelSizeX;
+  padfTransform[2] = 0;
+  padfTransform[3] = lat1 - rPixelSizeY/2;
+  padfTransform[4] = 0;
+  padfTransform[5] = rPixelSizeY;
+
+  return CE_None;
+}
+
 
 /************************************************************************/
 /*                             IReadBlock()                             */
 /************************************************************************/
 
 CPLErr GRIBAPIRasterBand::IReadBlock( int /* nBlockXOff */,
-                                   int nBlockYOff,
-                                   void * pImage )
-
+                                      int /* nBlockYOff */,
+                                      void * pImage )
 {
+  size_t size;
+
+  int err;
+  if ( ( err = grib_get_size ( handle, "values", &size ) ) != GRIB_SUCCESS )  {
+    CPLError( CE_Failure, CPLE_AppDefined,
+              "GRIBAPI: Could not get value array size: %s.\n",
+              grib_get_error_message(err));
+    return CE_Failure;
+  }
+
+  if ( size != nX*nY ) {
+    CPLError( CE_Failure, CPLE_AppDefined,
+              "GRIBAPI: unexpected value array size.\n" );
+    return CE_Failure;
+  }
+
+  double *buff = static_cast<double *>(pImage);
+  if ( ( err = grib_get_double_array ( handle, "values", buff, &size ) ) != GRIB_SUCCESS )  {
+    CPLError( CE_Failure, CPLE_AppDefined,
+              "GRIBAPI: Could get valye array: %s.\n",
+              grib_get_error_message(err));
+    return CE_Failure;
+  }
     return CE_None;
 }
 
@@ -180,8 +350,11 @@ CPLErr GRIBAPIRasterBand::IReadBlock( int /* nBlockXOff */,
 
 double GRIBAPIRasterBand::GetNoDataValue( int *pbSuccess )
 {
-    *pbSuccess = FALSE;
-    return 0;
+    int err;
+    double result = GetDouble("missingValue", &err);
+    if ( pbSuccess )
+      *pbSuccess = err == GRIB_SUCCESS ? TRUE : FALSE;
+    return result;
 }
 
 /************************************************************************/
@@ -190,12 +363,11 @@ double GRIBAPIRasterBand::GetNoDataValue( int *pbSuccess )
 
 GRIBAPIRasterBand::~GRIBAPIRasterBand()
 {
+  grib_handle_delete (handle);
 }
 
 /************************************************************************/
-/* ==================================================================== */
 /*                              GRIBAPIDataset                             */
-/* ==================================================================== */
 /************************************************************************/
 
 GRIBAPIDataset::GRIBAPIDataset():
@@ -209,6 +381,48 @@ GRIBAPIDataset::GRIBAPIDataset():
   adfGeoTransform[3] = 0.0;
   adfGeoTransform[4] = 0.0;
   adfGeoTransform[5] = 1.0;
+}
+
+/************************************************************************/
+/*                              GetGribBand                             */
+/************************************************************************/
+GRIBAPIRasterBand *GRIBAPIDataset::GetGribBand ( const int i )
+{
+  return static_cast<GRIBAPIRasterBand*>( GetRasterBand(i) );
+}
+
+/************************************************************************/
+/*                              LoadMetaData                            */
+/************************************************************************/
+CPLErr GRIBAPIDataset::LoadMetaData()
+{
+/* -------------------------------------------------------------------- */
+/*      Read common metadata from first valid message                         */
+/* -------------------------------------------------------------------- */
+  GRIBAPIRasterBand *fstBand = GetGribBand(1);
+
+  CPLErr err = CE_None;
+
+  for ( int i = 0, n = GetRasterCount(); i<n; i++ ) {
+      if ( ( err = GetGribBand(i+1)->LoadMetaData() ) != CE_None ) {
+        return err;
+      }
+  }
+
+  if (fstBand) {
+    nRasterXSize = fstBand->nX;
+    nRasterYSize = fstBand->nY;
+    if ( ( err = fstBand->GetGeoTransform( adfGeoTransform ) ) != CE_None )
+      return err;
+  }
+
+  CPLFree( pszProjection );
+  pszProjection = NULL;
+  OGRSpatialReference oSRS;
+  oSRS.importFromEPSG(4326);
+  oSRS.exportToWkt( &(pszProjection) );
+
+  return err;
 }
 
 /************************************************************************/
@@ -271,6 +485,7 @@ int GRIBAPIDataset::Identify( GDALOpenInfo * poOpenInfo )
     return FALSE;
 }
 
+
 /************************************************************************/
 /*                                Open()                                */
 /************************************************************************/
@@ -301,7 +516,8 @@ GDALDataset *GRIBAPIDataset::Open( GDALOpenInfo * poOpenInfo )
     if (!poDS->fp) {
         CPLDebug( "GRIB", "%s", strerror(errno) );
         CPLError( CE_Failure, CPLE_OpenFailed,
-                  "Error (%d) opening file %s", errno, poOpenInfo->pszFilename);
+                  "Error (%d) opening file %s\n",
+                  errno, poOpenInfo->pszFilename );
         delete poDS;
         return NULL;
     }
@@ -321,45 +537,47 @@ GDALDataset *GRIBAPIDataset::Open( GDALOpenInfo * poOpenInfo )
 /*      Create band objects.                                            */
 /* -------------------------------------------------------------------- */
     int err;
-    int bandNr = 1;
-    GRIBAPIRasterBand *fstBand = NULL;
-
+    std::vector<GRIBAPIRasterBand*> bands;
     grib_handle *h = grib_handle_new_from_file(poDS->ctx, poDS->fp, &err);
+    GRIBAPIRasterBand::const_band_iterator it;
     if ( err != GRIB_SUCCESS ) goto open_error;
-    fstBand = new GRIBAPIRasterBand ( poDS, h);
-    if ( ( err = fstBand->lastError) != GRIB_SUCCESS ) {
-      delete fstBand;
-      goto open_error;
-    }
 
     while ( ( h = grib_handle_new_from_file(poDS->ctx, poDS->fp, &err) ) != NULL ) {
       if ( err != GRIB_SUCCESS ) goto open_error;
-      GRIBAPIRasterBand *band = new GRIBAPIRasterBand ( poDS, h );
-      if ( ( err = band->lastError ) != GRIB_SUCCESS ) {
-        if ( bandNr == 1 ) {
-          delete fstBand;
-        }
-        goto open_error;
+      bands.push_back(new GRIBAPIRasterBand ( poDS, 0, h ));
+    }
+    if ( !GRIBAPIRasterBand::allSameSize ( bands ) ) {
+      CPLError( CE_Warning, CPLE_AppDefined,
+                "GRIBAPI: First message differs in size from the next. "
+                "I will try to skip it.\n"
+                );
+      delete bands[0];
+      bands.erase( bands.begin() );
+      if ( !GRIBAPIRasterBand::allSameSize ( bands ) ) {
+        CPLError( CE_Warning, CPLE_AppDefined,
+                  "GRIBAPI: Second message differs too. I can't handle this\n"
+            );
+        for ( it = bands.begin(); it < bands.end(); it++ ) delete *it;
+        delete poDS;
+        return NULL;
       }
-      if ( bandNr == 1 ) {
-        if ( fstBand->nX != band->nX || fstBand->nY != band->nY )  {
-          CPLError( CE_Warning, CPLE_AppDefined,
-                    "First message differs in size from the next, will skip it"
-                    );
-          delete fstBand;
-          fstBand = band;
-        } else {
-          poDS->SetBand( bandNr++, fstBand );
-        }
-      }
-      poDS->SetBand( bandNr++, band );
     }
 
-/* -------------------------------------------------------------------- */
-/*      Read common metadata from first valid message                         */
-/* -------------------------------------------------------------------- */
-    poDS->nRasterXSize = fstBand->nX;
-    poDS->nRasterYSize = fstBand->nY;
+    int bandNr;
+    for ( it = bands.begin(), bandNr = 1
+        ; it < bands.end()
+        ; it++, bandNr++
+        ) {
+      (*it)->nBand = bandNr;
+      poDS->SetBand( bandNr, *it );
+    }
+    if ( CE_None != poDS->LoadMetaData() ) {
+      CPLError( CE_Failure, CPLE_OpenFailed,
+                "Error opening file %s\n",
+                poOpenInfo->pszFilename );
+      delete poDS;
+      return NULL;
+    }
 
 /* -------------------------------------------------------------------- */
 /*      Initialize any PAM information.                                 */
@@ -378,7 +596,7 @@ GDALDataset *GRIBAPIDataset::Open( GDALOpenInfo * poOpenInfo )
 
 open_error:
   CPLError( CE_Failure, CPLE_OpenFailed,
-            "Error (%s) opening file %s",
+            "Error (%s) opening file %s\n",
             grib_get_error_message(err),
             poOpenInfo->pszFilename 
           );
@@ -386,200 +604,6 @@ open_error:
   return NULL;
 }
 
-/************************************************************************/
-/*                            SetMetadata()                             */
-/************************************************************************/
-
-/*
-void GRIBAPIDataset::SetGribMetaData(grib_MetaData* meta)
-{
-    nRasterXSize = meta->gds.Nx;
-    nRasterYSize = meta->gds.Ny;
-
-// --------------------------------------------------------------------
-//      Image projection.                                              
-// --------------------------------------------------------------------
-    OGRSpatialReference oSRS;
-
-    switch(meta->gds.projType)
-    {
-      case GS3_LATLON:
-      case GS3_GAUSSIAN_LATLON:
-          // No projection, only latlon system (geographic)
-          break;
-      case GS3_MERCATOR:
-        oSRS.SetMercator(meta->gds.meshLat, meta->gds.orientLon,
-                         1.0, 0.0, 0.0);
-        break;
-      case GS3_POLAR:
-        oSRS.SetPS(meta->gds.meshLat, meta->gds.orientLon,
-                   meta->gds.scaleLat1,
-                   0.0, 0.0);
-        break;
-      case GS3_LAMBERT:
-        oSRS.SetLCC(meta->gds.scaleLat1, meta->gds.scaleLat2,
-                    meta->gds.meshLat, meta->gds.orientLon,
-                    0.0, 0.0); // set projection
-        break;
-
-      case GS3_ORTHOGRAPHIC:
-
-        // oSRS.SetOrthographic( 0.0, meta->gds.orientLon,
-        //                       meta->gds.lon2, meta->gds.lat2);
-
-        // oSRS.SetGEOS( meta->gds.orientLon, meta->gds.stretchFactor,
-        //               meta->gds.lon2, meta->gds.lat2);
-
-        // TODO: Hardcoded for now. How to parse the meta->gds section?
-        oSRS.SetGEOS(  0, 35785831, 0, 0 );
-        break;
-      case GS3_EQUATOR_EQUIDIST:
-        break;
-      case GS3_AZIMUTH_RANGE:
-        break;
-    }
-
-// --------------------------------------------------------------------
-//      Earth model                                                   
-// --------------------------------------------------------------------
-    double a = meta->gds.majEarth * 1000.0; // in meters
-    double b = meta->gds.minEarth * 1000.0;
-    if( a == 0 && b == 0 )
-    {
-        a = 6377563.396;
-        b = 6356256.910;
-    }
-
-    if (meta->gds.f_sphere)
-    {
-        oSRS.SetGeogCS( "Coordinate System imported from GRIB file",
-                        NULL,
-                        "Sphere",
-                        a, 0.0 );
-    }
-    else
-    {
-        const double fInv = a / (a - b);
-        oSRS.SetGeogCS( "Coordinate System imported from GRIB file",
-                        NULL,
-                        "Spheroid imported from GRIB file",
-                        a, fInv );
-    }
-
-    OGRSpatialReference oLL; // construct the "geographic" part of oSRS
-    oLL.CopyGeogCSFrom( &oSRS );
-
-    double rMinX = 0.0;
-    double rMaxY = 0.0;
-    double rPixelSizeX = 0.0;
-    double rPixelSizeY = 0.0;
-    if (meta->gds.projType == GS3_ORTHOGRAPHIC)
-    {
-        // This is what should work, but it doesn't .. Dx seems to have an
-        // inverse relation with pixel size.
-        // rMinX = -meta->gds.Dx * (meta->gds.Nx / 2);
-        // rMaxY = meta->gds.Dy * (meta->gds.Ny / 2);
-        // Hardcoded for now, assumption: GEOS projection, full disc (like MSG).
-        const double geosExtentInMeters = 11137496.552;
-        rMinX = -(geosExtentInMeters / 2);
-        rMaxY = geosExtentInMeters / 2;
-        rPixelSizeX = geosExtentInMeters / meta->gds.Nx;
-        rPixelSizeY = geosExtentInMeters / meta->gds.Ny;
-    }
-    else if( oSRS.IsProjected() )
-    {
-        // Longitude in degrees, to be transformed to meters (or degrees in
-        // case of latlon).
-        rMinX = meta->gds.lon1;
-        // Latitude in degrees, to be transformed to meters.
-        rMaxY = meta->gds.lat1;
-        OGRCoordinateTransformation *poTransformLLtoSRS =
-            OGRCreateCoordinateTransformation( &(oLL), &(oSRS) );
-        // Transform it to meters.
-        if( (poTransformLLtoSRS != NULL) &&
-            poTransformLLtoSRS->Transform( 1, &rMinX, &rMaxY ))
-        {
-            if (meta->gds.scan == GRIBAPIBIT_2) // Y is minY, GDAL wants maxY
-            {
-                // -1 because we GDAL needs the coordinates of the centre of
-                // the pixel.
-                rMaxY += (meta->gds.Ny - 1) * meta->gds.Dy;
-            }
-            rPixelSizeX = meta->gds.Dx;
-            rPixelSizeY = meta->gds.Dy;
-        }
-        else
-        {
-            rMinX = 0.0;
-            rMaxY = 0.0;
-
-            rPixelSizeX = 1.0;
-            rPixelSizeY = -1.0;
-
-            oSRS.Clear();
-
-            CPLError( CE_Warning, CPLE_AppDefined,
-                      "Unable to perform coordinate transformations, so the "
-                      "correct projected geotransform could not be deduced "
-                      "from the lat/long control points.  "
-                      "Defaulting to ungeoreferenced." );
-        }
-        delete poTransformLLtoSRS;
-    }
-    else
-    {
-        // Longitude in degrees, to be transformed to meters (or degrees in
-        // case of latlon).
-        rMinX = meta->gds.lon1;
-        // Latitude in degrees, to be transformed to meters.
-        rMaxY = meta->gds.lat1;
-
-        double rMinY = meta->gds.lat2;
-        if (meta->gds.lat2 > rMaxY)
-        {
-          rMaxY = meta->gds.lat2;
-          rMinY = meta->gds.lat1;
-        }
-
-        if( meta->gds.Nx == 1 )
-          rPixelSizeX = meta->gds.Dx;
-        else if (meta->gds.lon1 > meta->gds.lon2)
-          rPixelSizeX =
-              (360.0 - (meta->gds.lon1 - meta->gds.lon2)) / (meta->gds.Nx - 1);
-        else
-          rPixelSizeX = (meta->gds.lon2 - meta->gds.lon1) / (meta->gds.Nx - 1);
-
-        if( meta->gds.Ny == 1 )
-            rPixelSizeY = meta->gds.Dy;
-        else
-            rPixelSizeY = (rMaxY - rMinY) / (meta->gds.Ny - 1);
-
-        // Do some sanity checks for cases that can't be handled by the above
-        // pixel size corrections. GRIB1 has a minimum precision of 0.001
-        // for latitudes and longitudes, so we'll allow a bit higher than that.
-        if (rPixelSizeX < 0 || fabs(rPixelSizeX - meta->gds.Dx) > 0.002)
-          rPixelSizeX = meta->gds.Dx;
-
-        if (rPixelSizeY < 0 || fabs(rPixelSizeY - meta->gds.Dy) > 0.002)
-          rPixelSizeY = meta->gds.Dy;
-    }
-
-    // http://gdal.org/gdal_datamodel.html :
-    //   we need the top left corner of the top left pixel.
-    //   At the moment we have the center of the pixel.
-    rMinX-=rPixelSizeX/2;
-    rMaxY+=rPixelSizeY/2;
-
-    adfGeoTransform[0] = rMinX;
-    adfGeoTransform[3] = rMaxY;
-    adfGeoTransform[1] = rPixelSizeX;
-    adfGeoTransform[5] = -rPixelSizeY;
-
-    CPLFree( pszProjection );
-    pszProjection = NULL;
-    oSRS.exportToWkt( &(pszProjection) );
-}
-*/
 
 /************************************************************************/
 /*                       GDALDeregister_GRIBAPI()                          */
