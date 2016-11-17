@@ -49,6 +49,8 @@ CPL_C_START
 void GDALRegister_GRIBAPI();
 CPL_C_END
 
+static const char* DATASET_KEY = "indicatorOfParameter";
+
 /************************************************************************/
 /* ==================================================================== */
 /*                              GRIBAPIDataset                             */
@@ -56,6 +58,8 @@ CPL_C_END
 /************************************************************************/
 
 class GRIBAPIRasterBand;
+
+typedef std::vector<GRIBAPIRasterBand*> band_vector;
 
 class GRIBAPIDataset : public GDALDataset
 {
@@ -72,7 +76,8 @@ class GRIBAPIDataset : public GDALDataset
     const char *GetProjectionRef();
 
   private:
-    CPLErr LoadMetaData(bool);
+    CPLErr LoadMetaData(const band_vector &bands);
+    CPLErr LoadSubdatasets(const band_vector &bands);
 
     GRIBAPIRasterBand *GetGribBand ( const int i );
 
@@ -132,6 +137,11 @@ private:
     return ret;
   }
 
+  long GetLong ( const char *key ) const {
+    int err;
+    return GetLong ( key, &err);
+  }
+
   int GetString ( const char *key, char *value, size_t *vlen ) const {
     int err;
     err = grib_get_string ( handle, key, value, vlen );
@@ -153,11 +163,10 @@ private:
     }
   }
 
-  typedef std::vector<GRIBAPIRasterBand*>::const_iterator const_band_iterator;
 
-  static bool allSameSize (const std::vector<GRIBAPIRasterBand*>& bands)
+  static bool allSameSize (const band_vector& bands)
   {
-    GRIBAPIRasterBand::const_band_iterator it = bands.begin();
+    band_vector::const_iterator it = bands.begin();
     GRIBAPIRasterBand *fst = *(it++);
     for ( ; it < bands.end(); it++ ) {
       if ( (*it)->nX != fst->nX || (*it)->nY != fst->nY ) {
@@ -405,54 +414,22 @@ GRIBAPIRasterBand *GRIBAPIDataset::GetGribBand ( const int i )
 /************************************************************************/
 /*                              LoadMetaData                            */
 /************************************************************************/
-CPLErr GRIBAPIDataset::LoadMetaData(bool isSubdataset)
+CPLErr GRIBAPIDataset::LoadMetaData(const band_vector& bands)
 {
 /* -------------------------------------------------------------------- */
 /*      Read common metadata from first valid message                         */
 /* -------------------------------------------------------------------- */
   CPLErr err = CE_None;
+  if (bands.size()) {
 
-  for ( int i = 0, n = GetRasterCount(); i<n; i++ ) {
-    GRIBAPIRasterBand *band = GetGribBand( i + 1 );
-    assert ( band );
-
-    if ( ( err = band->LoadMetaData() ) != CE_None ) {
-      return err;
+    for (band_vector::const_iterator it=bands.begin(); it<bands.end(); it++) {
+      if ( ( err = (*it)->LoadMetaData() ) != CE_None ) {
+        return err;
+      }
     }
-
-    if (!isSubdataset) {
-
-      std::ostringstream name_key;
-      name_key << "SUBDATASET_" << i + 1 << "_NAME" ;
-      std::ostringstream name_value;
-      name_value << "GRIBAPI:" << band->GetString("shortName") << ":"
-                 << GetDescription();
-      SetMetadataItem ( name_key.str().c_str(),
-                        name_value.str().c_str(),
-                        "SUBDATASETS" );
-
-      std::ostringstream desc_key;
-      desc_key << "SUBDATASET_" << i + 1 << "_DESC" ;
-      std::ostringstream desc_value;
-      desc_value
-        << band->GetString("parameterName")
-        << " (" << band->GetString("dataDate")
-                << band->GetString("dataTime") << " +"
-                << band->GetString("startStep")
-                << band->GetString("stepUnits")
-        << ") of "
-        << GetDescription();
-      SetMetadataItem ( desc_key.str().c_str(),
-                        desc_value.str().c_str(),
-                        "SUBDATASETS" );
-    }
-  }
-
-  GRIBAPIRasterBand *fstBand = GetGribBand(1);
-  if (fstBand) {
-    nRasterXSize = fstBand->nX;
-    nRasterYSize = fstBand->nY;
-    if ( ( err = fstBand->GetGeoTransform( adfGeoTransform ) ) != CE_None )
+    nRasterXSize = bands[0]->nX;
+    nRasterYSize = bands[0]->nY;
+    if ( ( err = bands[0]->GetGeoTransform( adfGeoTransform ) ) != CE_None )
       return err;
   }
 
@@ -463,6 +440,39 @@ CPLErr GRIBAPIDataset::LoadMetaData(bool isSubdataset)
   oSRS.exportToWkt( &(pszProjection) );
 
   return err;
+}
+
+CPLErr GRIBAPIDataset::LoadSubdatasets(const band_vector& bands)
+{
+  band_vector::const_iterator it;
+  int i;
+  for (i=0, it=bands.begin(); it<bands.end(); i++, it++) {
+    GRIBAPIRasterBand *band = *it;
+    std::ostringstream name_key;
+    name_key << "SUBDATASET_" << i + 1 << "_NAME" ;
+    std::ostringstream name_value;
+    name_value << "GRIBAPI:" << band->GetString(DATASET_KEY) << ":"
+               << GetDescription();
+    SetMetadataItem ( name_key.str().c_str(),
+                      name_value.str().c_str(),
+                      "SUBDATASETS" );
+
+    std::ostringstream desc_key;
+    desc_key << "SUBDATASET_" << i + 1 << "_DESC" ;
+    std::ostringstream desc_value;
+    desc_value
+      << band->GetString("parameterName")
+      << " (" << band->GetString("dataDate")
+              << band->GetString("dataTime") << " +"
+              << band->GetString("startStep")
+              << band->GetString("stepUnits")
+      << ") of "
+      << GetDescription();
+    SetMetadataItem ( desc_key.str().c_str(),
+                      desc_value.str().c_str(),
+                      "SUBDATASETS" );
+  }
+  return CE_None;
 }
 
 /************************************************************************/
@@ -537,6 +547,13 @@ int GRIBAPIDataset::Identify( GDALOpenInfo * poOpenInfo )
     return FALSE;
 }
 
+static inline void deleteBands(band_vector& bands)
+{
+  band_vector::const_iterator it;
+  for ( it = bands.begin(); it < bands.end(); it++ ) delete *it;
+  bands.erase(bands.begin(), bands.end());
+}
+
 
 /************************************************************************/
 /*                                Open()                                */
@@ -545,13 +562,18 @@ int GRIBAPIDataset::Identify( GDALOpenInfo * poOpenInfo )
 GDALDataset *GRIBAPIDataset::Open( GDALOpenInfo * poOpenInfo )
 
 {
+  if( !Identify(poOpenInfo) )
+    return NULL;
+
   const char *pszFilename = poOpenInfo->pszFilename;
   char *subdataset = NULL;
+  long subdatasetLong = 0;
   if( STARTS_WITH_CI(pszFilename, "GRIBAPI:") ) {
     int i;
     for ( i = 8; i<strlen(pszFilename); i++) {
       if (pszFilename[i] == ':') {
         subdataset = strndup(pszFilename+8, i-8);
+        subdatasetLong = atoi(subdataset);
         pszFilename += i + 1;
         break;
       }
@@ -572,6 +594,8 @@ GDALDataset *GRIBAPIDataset::Open( GDALOpenInfo * poOpenInfo )
 /*      Create a corresponding GDALDataset.                             */
 /* -------------------------------------------------------------------- */
     GRIBAPIDataset *poDS = new GRIBAPIDataset();
+
+    poDS->SetDescription( poOpenInfo->pszFilename );
 
     poDS->fp = fopen(pszFilename, "r"); 
 
@@ -599,7 +623,6 @@ GDALDataset *GRIBAPIDataset::Open( GDALOpenInfo * poOpenInfo )
 /*      Create band objects.                                            */
 /* -------------------------------------------------------------------- */
     int err;
-    std::vector<GRIBAPIRasterBand*> bands;
     grib_handle *h = grib_handle_new_from_file(poDS->ctx, poDS->fp, &err);
 
     if ( err != GRIB_SUCCESS ) {
@@ -612,6 +635,9 @@ GDALDataset *GRIBAPIDataset::Open( GDALOpenInfo * poOpenInfo )
       return NULL;
     }
 
+    band_vector bands;
+    // Create bands from all messages if no subdataset requested or only
+    // for the requested one
     while ( ( h = grib_handle_new_from_file(poDS->ctx, poDS->fp, &err) ) != NULL ) {
       if ( err != GRIB_SUCCESS ) {
         CPLError( CE_Failure, CPLE_OpenFailed,
@@ -624,15 +650,19 @@ GDALDataset *GRIBAPIDataset::Open( GDALOpenInfo * poOpenInfo )
       }
       GRIBAPIRasterBand *band = new GRIBAPIRasterBand ( poDS, 0, h );
       if (subdataset) {
-        if (!strcmp(subdataset, band->GetString("shortName").c_str())) {
+        if (subdatasetLong && subdatasetLong == band->GetLong(DATASET_KEY) ||
+            !strcmp(subdataset, band->GetString(DATASET_KEY).c_str())) {
           bands.push_back(band);
-          break;
+        } else {
+          delete band;
         }
       } else {
           bands.push_back(band);
       }
     }
 
+    // free it now that we no longer use it. Make sure not to use the pointer
+    // from now on!
     if (subdataset) {
       free(subdataset);
     }
@@ -645,7 +675,9 @@ GDALDataset *GRIBAPIDataset::Open( GDALOpenInfo * poOpenInfo )
       return NULL;
       
     }
-    if ( !GRIBAPIRasterBand::allSameSize ( bands ) ) {
+
+    // INM sends a dummy first message, skip it
+    if ( !subdataset && !GRIBAPIRasterBand::allSameSize ( bands ) ) {
       CPLError( CE_Warning, CPLE_AppDefined,
                 "GRIBAPI: First message differs in size from the next. "
                 "I will skip it.\n"
@@ -656,31 +688,39 @@ GDALDataset *GRIBAPIDataset::Open( GDALOpenInfo * poOpenInfo )
         CPLError( CE_Warning, CPLE_AppDefined,
                   "GRIBAPI: Second message differs too. I can't handle this\n"
             );
-        GRIBAPIRasterBand::const_band_iterator it;
-        for ( it = bands.begin(); it < bands.end(); it++ ) delete *it;
+        deleteBands( bands );
         delete poDS;
         return NULL;
       }
     }
 
-    int bandNr;
-    GRIBAPIRasterBand::const_band_iterator it;
-    for ( it = bands.begin(), bandNr = 1
-        ; it < bands.end()
-        ; it++, bandNr++
-        ) {
-      (*it)->nBand = bandNr;
-      poDS->SetBand( bandNr, *it );
-    }
-
-    poDS->SetDescription( poOpenInfo->pszFilename );
-
-    if ( CE_None != poDS->LoadMetaData(subdataset!=NULL) ) {
+    if ( CE_None != poDS->LoadMetaData(bands) ) {
       CPLError( CE_Failure, CPLE_OpenFailed,
-                "Error opening file %s\n",
+                "Could not load metadata from %s\n",
                 poOpenInfo->pszFilename );
+      deleteBands( bands );
       delete poDS;
       return NULL;
+    }
+
+    if ( !subdataset && CE_None != poDS->LoadSubdatasets(bands) ) {
+      CPLError( CE_Failure, CPLE_OpenFailed,
+                "Could not query subdatasets from  %s\n",
+                poOpenInfo->pszFilename );
+      deleteBands( bands );
+      delete poDS;
+      return NULL;
+    }
+
+    if (subdataset) {
+      // Add the bands from the vector to the dataset only if a subdataset
+      // was requested
+      int i;
+      band_vector::const_iterator it;
+      for ( it = bands.begin(), i = 1 ; it < bands.end() ; it++, i++) {
+        (*it)->nBand = i;
+        poDS->SetBand( i, *it );
+      }
     }
 
     return poDS;
