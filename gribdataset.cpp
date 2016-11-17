@@ -34,6 +34,7 @@
 #include "gdal_pam.h"
 #include "ogr_spatialref.h"
 
+#include <assert.h>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -56,7 +57,7 @@ CPL_C_END
 
 class GRIBAPIRasterBand;
 
-class GRIBAPIDataset : public GDALPamDataset
+class GRIBAPIDataset : public GDALDataset
 {
     friend class GRIBAPIRasterBand;
 
@@ -71,7 +72,7 @@ class GRIBAPIDataset : public GDALPamDataset
     const char *GetProjectionRef();
 
   private:
-    CPLErr LoadMetaData();
+    CPLErr LoadMetaData(bool);
 
     GRIBAPIRasterBand *GetGribBand ( const int i );
 
@@ -87,7 +88,7 @@ class GRIBAPIDataset : public GDALPamDataset
 /* ==================================================================== */
 /************************************************************************/
 
-class GRIBAPIRasterBand : public GDALPamRasterBand
+class GRIBAPIRasterBand : public GDALRasterBand
 {
     friend class GRIBAPIDataset;
 
@@ -140,6 +141,16 @@ private:
                 grib_get_error_message(err) );
     }
     return err;
+  }
+
+  std::string GetString ( const char *key ) const {
+    size_t len = MAX_VAL_LEN;
+    char buffer[MAX_VAL_LEN];
+    if ( GetString ( key, buffer, &len ) != GRIB_SUCCESS ) {
+      return std::string("<INVALID_KEY>");
+    } else {
+      return std::string(buffer);
+    }
   }
 
   typedef std::vector<GRIBAPIRasterBand*>::const_iterator const_band_iterator;
@@ -217,7 +228,7 @@ CPLErr GRIBAPIRasterBand::LoadMetaData( const char *name_space )
 
 const char * GRIBAPIRasterBand::GetDescription() const
 {
-    return GDALPamRasterBand::GetDescription();
+    return GDALRasterBand::GetDescription();
 }
 
 static inline double degToRad(double a) {
@@ -394,21 +405,50 @@ GRIBAPIRasterBand *GRIBAPIDataset::GetGribBand ( const int i )
 /************************************************************************/
 /*                              LoadMetaData                            */
 /************************************************************************/
-CPLErr GRIBAPIDataset::LoadMetaData()
+CPLErr GRIBAPIDataset::LoadMetaData(bool isSubdataset)
 {
 /* -------------------------------------------------------------------- */
 /*      Read common metadata from first valid message                         */
 /* -------------------------------------------------------------------- */
-  GRIBAPIRasterBand *fstBand = GetGribBand(1);
-
   CPLErr err = CE_None;
 
   for ( int i = 0, n = GetRasterCount(); i<n; i++ ) {
-      if ( ( err = GetGribBand(i+1)->LoadMetaData() ) != CE_None ) {
-        return err;
-      }
+    GRIBAPIRasterBand *band = GetGribBand( i + 1 );
+    assert ( band );
+
+    if ( ( err = band->LoadMetaData() ) != CE_None ) {
+      return err;
+    }
+
+    if (!isSubdataset) {
+
+      std::ostringstream name_key;
+      name_key << "SUBDATASET_" << i + 1 << "_NAME" ;
+      std::ostringstream name_value;
+      name_value << "GRIBAPI:" << band->GetString("shortName") << ":"
+                 << GetDescription();
+      SetMetadataItem ( name_key.str().c_str(),
+                        name_value.str().c_str(),
+                        "SUBDATASETS" );
+
+      std::ostringstream desc_key;
+      desc_key << "SUBDATASET_" << i + 1 << "_DESC" ;
+      std::ostringstream desc_value;
+      desc_value
+        << band->GetString("parameterName")
+        << " (" << band->GetString("dataDate")
+                << band->GetString("dataTime") << " +"
+                << band->GetString("startStep")
+                << band->GetString("stepUnits")
+        << ") of "
+        << GetDescription();
+      SetMetadataItem ( desc_key.str().c_str(),
+                        desc_value.str().c_str(),
+                        "SUBDATASETS" );
+    }
   }
 
+  GRIBAPIRasterBand *fstBand = GetGribBand(1);
   if (fstBand) {
     nRasterXSize = fstBand->nX;
     nRasterYSize = fstBand->nY;
@@ -469,8 +509,20 @@ const char *GRIBAPIDataset::GetProjectionRef()
 
 int GRIBAPIDataset::Identify( GDALOpenInfo * poOpenInfo )
 {
-    if (poOpenInfo->nHeaderBytes < 8)
-        return FALSE;
+  const char *pszFilename = poOpenInfo->pszFilename;
+  if( STARTS_WITH_CI(pszFilename, "GRIBAPI:") ) {
+    int i;
+    for ( i = 8; i<strlen(pszFilename); i++) {
+      if (pszFilename[i] == ':') {
+        GDALOpenInfo oOpenInfo( pszFilename + i + 1, poOpenInfo->eAccess );
+        return Identify(&oOpenInfo);
+      }
+    }
+    return FALSE;
+  }
+
+  if (poOpenInfo->nHeaderBytes < 8)
+    return FALSE;
 
 /* -------------------------------------------------------------------- */
 /*      Does a part of what ReadSECT0() but in a thread-safe way.       */
@@ -493,8 +545,18 @@ int GRIBAPIDataset::Identify( GDALOpenInfo * poOpenInfo )
 GDALDataset *GRIBAPIDataset::Open( GDALOpenInfo * poOpenInfo )
 
 {
-    if( !Identify(poOpenInfo) )
-        return NULL;
+  const char *pszFilename = poOpenInfo->pszFilename;
+  char *subdataset = NULL;
+  if( STARTS_WITH_CI(pszFilename, "GRIBAPI:") ) {
+    int i;
+    for ( i = 8; i<strlen(pszFilename); i++) {
+      if (pszFilename[i] == ':') {
+        subdataset = strndup(pszFilename+8, i-8);
+        pszFilename += i + 1;
+        break;
+      }
+    }
+  }
 
 /* -------------------------------------------------------------------- */
 /*      Confirm the requested access is supported.                      */
@@ -511,13 +573,13 @@ GDALDataset *GRIBAPIDataset::Open( GDALOpenInfo * poOpenInfo )
 /* -------------------------------------------------------------------- */
     GRIBAPIDataset *poDS = new GRIBAPIDataset();
 
-    poDS->fp = fopen(poOpenInfo->pszFilename, "r"); 
+    poDS->fp = fopen(pszFilename, "r"); 
 
     if (!poDS->fp) {
         CPLDebug( "GRIB", "%s", strerror(errno) );
         CPLError( CE_Failure, CPLE_OpenFailed,
                   "Error (%d) opening file %s\n",
-                  errno, poOpenInfo->pszFilename );
+                  errno, pszFilename );
         delete poDS;
         return NULL;
     }
@@ -539,12 +601,49 @@ GDALDataset *GRIBAPIDataset::Open( GDALOpenInfo * poOpenInfo )
     int err;
     std::vector<GRIBAPIRasterBand*> bands;
     grib_handle *h = grib_handle_new_from_file(poDS->ctx, poDS->fp, &err);
-    GRIBAPIRasterBand::const_band_iterator it;
-    if ( err != GRIB_SUCCESS ) goto open_error;
+
+    if ( err != GRIB_SUCCESS ) {
+      CPLError( CE_Failure, CPLE_OpenFailed,
+                "Error (%s) opening file %s\n",
+                grib_get_error_message(err),
+                poOpenInfo->pszFilename 
+              );
+      delete poDS;
+      return NULL;
+    }
 
     while ( ( h = grib_handle_new_from_file(poDS->ctx, poDS->fp, &err) ) != NULL ) {
-      if ( err != GRIB_SUCCESS ) goto open_error;
-      bands.push_back(new GRIBAPIRasterBand ( poDS, 0, h ));
+      if ( err != GRIB_SUCCESS ) {
+        CPLError( CE_Failure, CPLE_OpenFailed,
+                  "Error (%s) opening file %s\n",
+                  grib_get_error_message(err),
+                  poOpenInfo->pszFilename 
+                );
+        delete poDS;
+        return NULL;
+      }
+      GRIBAPIRasterBand *band = new GRIBAPIRasterBand ( poDS, 0, h );
+      if (subdataset) {
+        if (!strcmp(subdataset, band->GetString("shortName").c_str())) {
+          bands.push_back(band);
+          break;
+        }
+      } else {
+          bands.push_back(band);
+      }
+    }
+
+    if (subdataset) {
+      free(subdataset);
+    }
+    
+    if ( bands.size() == 0 ) {
+      CPLError( CE_Warning, CPLE_AppDefined,
+                "GRIBAPI: Could not find any GRIB message\n"
+                );
+      delete poDS;
+      return NULL;
+      
     }
     if ( !GRIBAPIRasterBand::allSameSize ( bands ) ) {
       CPLError( CE_Warning, CPLE_AppDefined,
@@ -557,6 +656,7 @@ GDALDataset *GRIBAPIDataset::Open( GDALOpenInfo * poOpenInfo )
         CPLError( CE_Warning, CPLE_AppDefined,
                   "GRIBAPI: Second message differs too. I can't handle this\n"
             );
+        GRIBAPIRasterBand::const_band_iterator it;
         for ( it = bands.begin(); it < bands.end(); it++ ) delete *it;
         delete poDS;
         return NULL;
@@ -564,6 +664,7 @@ GDALDataset *GRIBAPIDataset::Open( GDALOpenInfo * poOpenInfo )
     }
 
     int bandNr;
+    GRIBAPIRasterBand::const_band_iterator it;
     for ( it = bands.begin(), bandNr = 1
         ; it < bands.end()
         ; it++, bandNr++
@@ -571,7 +672,10 @@ GDALDataset *GRIBAPIDataset::Open( GDALOpenInfo * poOpenInfo )
       (*it)->nBand = bandNr;
       poDS->SetBand( bandNr, *it );
     }
-    if ( CE_None != poDS->LoadMetaData() ) {
+
+    poDS->SetDescription( poOpenInfo->pszFilename );
+
+    if ( CE_None != poDS->LoadMetaData(subdataset!=NULL) ) {
       CPLError( CE_Failure, CPLE_OpenFailed,
                 "Error opening file %s\n",
                 poOpenInfo->pszFilename );
@@ -579,29 +683,7 @@ GDALDataset *GRIBAPIDataset::Open( GDALOpenInfo * poOpenInfo )
       return NULL;
     }
 
-/* -------------------------------------------------------------------- */
-/*      Initialize any PAM information.                                 */
-/* -------------------------------------------------------------------- */
-    poDS->SetDescription( poOpenInfo->pszFilename );
-
-    poDS->TryLoadXML();
-
-/* -------------------------------------------------------------------- */
-/*      Check for external overviews.                                   */
-/* -------------------------------------------------------------------- */
-    poDS->oOvManager.Initialize( poDS, poOpenInfo->pszFilename,
-                                 poOpenInfo->GetSiblingFiles() );
-
     return poDS;
-
-open_error:
-  CPLError( CE_Failure, CPLE_OpenFailed,
-            "Error (%s) opening file %s\n",
-            grib_get_error_message(err),
-            poOpenInfo->pszFilename 
-          );
-  delete poDS;
-  return NULL;
 }
 
 
@@ -629,6 +711,7 @@ void GDALRegister_GRIBAPI()
     poDriver->SetMetadataItem( GDAL_DCAP_RASTER, "YES" );
     poDriver->SetMetadataItem( GDAL_DMD_LONGNAME, "GRIdded Binary (.grb)" );
     poDriver->SetMetadataItem( GDAL_DMD_HELPTOPIC, "frmt_grib2.html" );
+    poDriver->SetMetadataItem( GDAL_DMD_SUBDATASETS, "YES" );
     poDriver->SetMetadataItem( GDAL_DMD_EXTENSION, "grb" );
     //poDriver->SetMetadataItem( GDAL_DCAP_VIRTUALIO, "YES" );
 
