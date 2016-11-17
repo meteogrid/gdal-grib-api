@@ -49,8 +49,6 @@ CPL_C_START
 void GDALRegister_GRIBAPI();
 CPL_C_END
 
-static const char* DATASET_KEY = "indicatorOfParameter";
-
 /************************************************************************/
 /* ==================================================================== */
 /*                              GRIBAPIDataset                             */
@@ -82,7 +80,6 @@ class GRIBAPIDataset : public GDALDataset
     GRIBAPIRasterBand *GetGribBand ( const int i );
 
     FILE  *fp;
-    grib_context *ctx;
     char  *pszProjection;
     double adfGeoTransform[6];
 };
@@ -153,7 +150,7 @@ private:
     return err;
   }
 
-  std::string GetString ( const char *key ) const {
+  const std::string GetString ( const char *key ) const {
     size_t len = MAX_VAL_LEN;
     char buffer[MAX_VAL_LEN];
     if ( GetString ( key, buffer, &len ) != GRIB_SUCCESS ) {
@@ -163,6 +160,13 @@ private:
     }
   }
 
+  std::string GetIdentifier () const {
+    if ( GetLong( "level" ) ) {
+      return GetString( "level" ) + GetString( "indicatorOfParameter" );
+    } else {
+      return GetString( "indicatorOfParameter" );
+    }
+  }
 
   static bool allSameSize (const band_vector& bands)
   {
@@ -187,15 +191,11 @@ GRIBAPIRasterBand::GRIBAPIRasterBand(
     GRIBAPIDataset *poDSIn, int nBandIn, grib_handle *handleIn ):
   handle(handleIn)
 {
-  int err = GRIB_SUCCESS;
   poDS = poDSIn;
   nBand = nBandIn;
-
-  // cant really handle errors here
-  nX = nBlockXSize = GetLong( "Ni", &err );
-  nY = nBlockYSize = GetLong( "Nj", &err );
+  nX = nBlockXSize = GetLong( "Ni" );
+  nY = nBlockYSize = GetLong( "Nj" );
   eDataType = GDT_Float64;
-
 }
 
 /************************************************************************/
@@ -203,8 +203,12 @@ GRIBAPIRasterBand::GRIBAPIRasterBand(
 /************************************************************************/
 CPLErr GRIBAPIRasterBand::LoadMetaData( const char *name_space )
 {
+  unsigned long filter_flags =
+    CPLTestBool( CPLGetConfigOption( "GRIBAPI_ALL_KEYS", "OFF" ) ) ?
+    GRIB_KEYS_ITERATOR_ALL_KEYS : GRIB_KEYS_ITERATOR_SKIP_COMPUTED;
+
   grib_keys_iterator* kiter =
-    grib_keys_iterator_new( handle, GRIB_KEYS_ITERATOR_ALL_KEYS, name_space );
+    grib_keys_iterator_new( handle, filter_flags, name_space );
   if ( !kiter ) {
     CPLError( CE_Failure, CPLE_OpenFailed,
               "GRIBAPI: grib_keys_iterator_new returned NULL\n" );
@@ -392,7 +396,6 @@ GRIBAPIRasterBand::~GRIBAPIRasterBand()
 
 GRIBAPIDataset::GRIBAPIDataset():
   fp(0),
-  ctx(0),
   pszProjection(0)
 {
   adfGeoTransform[0] = 0.0;
@@ -451,7 +454,9 @@ CPLErr GRIBAPIDataset::LoadSubdatasets(const band_vector& bands)
     std::ostringstream name_key;
     name_key << "SUBDATASET_" << i + 1 << "_NAME" ;
     std::ostringstream name_value;
-    name_value << "GRIBAPI:" << band->GetString(DATASET_KEY) << ":"
+    name_value << "GRIBAPI:"
+               << band->GetIdentifier()
+               << ":"
                << GetDescription();
     SetMetadataItem ( name_key.str().c_str(),
                       name_value.str().c_str(),
@@ -484,9 +489,6 @@ GRIBAPIDataset::~GRIBAPIDataset()
 {
     FlushCache();
     CPLFree( pszProjection );
-    if (ctx) {
-      grib_context_delete(ctx);
-    }
     if (fp) {
       fclose(fp);
     }
@@ -608,22 +610,11 @@ GDALDataset *GRIBAPIDataset::Open( GDALOpenInfo * poOpenInfo )
         return NULL;
     }
 
-    /*
-    poDS->ctx = grib_context_new(grib_context_get_default());
-    if (!poDS->ctx) {
-        CPLError( CE_Failure, CPLE_OpenFailed,
-                  "Error creating grib_context %s", poOpenInfo->pszFilename);
-        delete poDS; // will close fp if not NULL
-        return NULL;
-    }
-    */
-    poDS->ctx = NULL; //FIXME
-
 /* -------------------------------------------------------------------- */
 /*      Create band objects.                                            */
 /* -------------------------------------------------------------------- */
     int err;
-    grib_handle *h = grib_handle_new_from_file(poDS->ctx, poDS->fp, &err);
+    grib_handle *h = grib_handle_new_from_file(NULL, poDS->fp, &err);
 
     if ( err != GRIB_SUCCESS ) {
       CPLError( CE_Failure, CPLE_OpenFailed,
@@ -638,7 +629,7 @@ GDALDataset *GRIBAPIDataset::Open( GDALOpenInfo * poOpenInfo )
     band_vector bands;
     // Create bands from all messages if no subdataset requested or only
     // for the requested one
-    while ( ( h = grib_handle_new_from_file(poDS->ctx, poDS->fp, &err) ) != NULL ) {
+    while ( ( h = grib_handle_new_from_file(NULL, poDS->fp, &err) ) != NULL ) {
       if ( err != GRIB_SUCCESS ) {
         CPLError( CE_Failure, CPLE_OpenFailed,
                   "Error (%s) opening file %s\n",
@@ -650,8 +641,7 @@ GDALDataset *GRIBAPIDataset::Open( GDALOpenInfo * poOpenInfo )
       }
       GRIBAPIRasterBand *band = new GRIBAPIRasterBand ( poDS, 0, h );
       if (subdataset) {
-        if (subdatasetLong && subdatasetLong == band->GetLong(DATASET_KEY) ||
-            !strcmp(subdataset, band->GetString(DATASET_KEY).c_str())) {
+        if ( !strcmp( subdataset, band->GetIdentifier().c_str() ) ) {
           bands.push_back(band);
         } else {
           delete band;
