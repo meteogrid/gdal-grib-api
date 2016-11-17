@@ -1,6 +1,6 @@
 /******************************************************************************
  *
- * Project:  GRIB Driver
+ * Project:  GRIBAPI Driver
  * Purpose:  GDALDataset driver for GRIB using grib_api
  * Author:   Alberto Valverde, <alberto@meteogrid.com>
  *
@@ -50,9 +50,7 @@ void GDALRegister_GRIBAPI();
 CPL_C_END
 
 /************************************************************************/
-/* ==================================================================== */
-/*                              GRIBAPIDataset                             */
-/* ==================================================================== */
+/*                              GRIBAPIDataset                          */
 /************************************************************************/
 
 class GRIBAPIRasterBand;
@@ -85,9 +83,7 @@ class GRIBAPIDataset : public GDALDataset
 };
 
 /************************************************************************/
-/* ==================================================================== */
-/*                            GRIBAPIRasterBand                             */
-/* ==================================================================== */
+/*                            GRIBAPIRasterBand                         */
 /************************************************************************/
 
 class GRIBAPIRasterBand : public GDALRasterBand
@@ -184,7 +180,7 @@ private:
 
 
 /************************************************************************/
-/*                           GRIBAPIRasterBand()                            */
+/*                           GRIBAPIRasterBand()                        */
 /************************************************************************/
 
 GRIBAPIRasterBand::GRIBAPIRasterBand(
@@ -252,7 +248,7 @@ static inline double degToRad(double a) {
 }
 
 /************************************************************************/
-/*                         GetGeoTransform()                             */
+/*                         GetGeoTransform()                            */
 /************************************************************************/
 CPLErr GRIBAPIRasterBand::GetGeoTransform (double (&padfTransform)[6]) const
 {
@@ -261,7 +257,7 @@ CPLErr GRIBAPIRasterBand::GetGeoTransform (double (&padfTransform)[6]) const
   if (err) return CE_Failure;
   if ( degRot != 0 ) {
     CPLError( CE_Warning, CPLE_NotSupported,
-              "The GRIBAPI driver does not support yet "
+              "The GRIBAPI driver does not support "
               "datasets with rotation.\n" );
   }
   //
@@ -325,13 +321,14 @@ CPLErr GRIBAPIRasterBand::GetGeoTransform (double (&padfTransform)[6]) const
     rPixelSizeY *= -1;
 
   // move to center of pixel
-
   padfTransform[0] = lon1 - rPixelSizeX/2;
-  padfTransform[1] = rPixelSizeX;
-  padfTransform[2] = 0;
   padfTransform[3] = lat1 - rPixelSizeY/2;
-  padfTransform[4] = 0;
+
+  padfTransform[1] = rPixelSizeX;
   padfTransform[5] = rPixelSizeY;
+
+  padfTransform[2] = 0;
+  padfTransform[4] = 0;
 
   return CE_None;
 }
@@ -368,7 +365,8 @@ CPLErr GRIBAPIRasterBand::IReadBlock( int /* nBlockXOff */,
               grib_get_error_message(err));
     return CE_Failure;
   }
-    return CE_None;
+
+  return CE_None;
 }
 
 /************************************************************************/
@@ -488,7 +486,6 @@ CPLErr GRIBAPIDataset::LoadSubdatasets(const band_vector& bands)
 /************************************************************************/
 
 GRIBAPIDataset::~GRIBAPIDataset()
-
 {
     FlushCache();
     CPLFree( pszProjection );
@@ -502,7 +499,6 @@ GRIBAPIDataset::~GRIBAPIDataset()
 /************************************************************************/
 
 CPLErr GRIBAPIDataset::GetGeoTransform( double * padfTransform )
-
 {
     memcpy( padfTransform,  adfGeoTransform, sizeof(double) * 6 );
     return CE_None;
@@ -513,7 +509,6 @@ CPLErr GRIBAPIDataset::GetGeoTransform( double * padfTransform )
 /************************************************************************/
 
 const char *GRIBAPIDataset::GetProjectionRef()
-
 {
     return pszProjection;
 }
@@ -552,6 +547,9 @@ int GRIBAPIDataset::Identify( GDALOpenInfo * poOpenInfo )
     return FALSE;
 }
 
+/************************************************************************/
+/*                                deleteBands util                      */
+/************************************************************************/
 static inline void deleteBands(band_vector& bands)
 {
   band_vector::const_iterator it;
@@ -570,6 +568,21 @@ GDALDataset *GRIBAPIDataset::Open( GDALOpenInfo * poOpenInfo )
   if( !Identify(poOpenInfo) )
     return NULL;
 
+
+/* -------------------------------------------------------------------- */
+/*      Confirm the requested access is supported.                      */
+/* -------------------------------------------------------------------- */
+    if( poOpenInfo->eAccess == GA_Update )
+    {
+        CPLError( CE_Failure, CPLE_NotSupported,
+                  "The GRIBAPI driver does not support update access to existing"
+                  " datasets.\n" );
+        return NULL;
+    }
+
+/* -------------------------------------------------------------------- */
+/*      Extract subdataset part if available and fix pszFilename        */
+/* -------------------------------------------------------------------- */
   const char *pszFilename = poOpenInfo->pszFilename;
   char *subdataset = NULL;
   if( STARTS_WITH_CI(pszFilename, "GRIBAPI:") ) {
@@ -583,16 +596,6 @@ GDALDataset *GRIBAPIDataset::Open( GDALOpenInfo * poOpenInfo )
     }
   }
 
-/* -------------------------------------------------------------------- */
-/*      Confirm the requested access is supported.                      */
-/* -------------------------------------------------------------------- */
-    if( poOpenInfo->eAccess == GA_Update )
-    {
-        CPLError( CE_Failure, CPLE_NotSupported,
-                  "The GRIBAPI driver does not support update access to existing"
-                  " datasets.\n" );
-        return NULL;
-    }
 /* -------------------------------------------------------------------- */
 /*      Create a corresponding GDALDataset.                             */
 /* -------------------------------------------------------------------- */
@@ -627,9 +630,11 @@ GDALDataset *GRIBAPIDataset::Open( GDALOpenInfo * poOpenInfo )
       return NULL;
     }
 
+/* -------------------------------------------------------------------- */
+/*  Create bands from all messages if no subdataset requested or only   */
+/*  for the requested one                                               */
+/* -------------------------------------------------------------------- */
     band_vector bands;
-    // Create bands from all messages if no subdataset requested or only
-    // for the requested one
     while ( ( h = grib_handle_new_from_file(NULL, poDS->fp, &err) ) != NULL ) {
       if ( err != GRIB_SUCCESS ) {
         CPLError( CE_Failure, CPLE_OpenFailed,
@@ -703,7 +708,7 @@ GDALDataset *GRIBAPIDataset::Open( GDALOpenInfo * poOpenInfo )
       return NULL;
     }
 
-    if (subdataset) {
+    if ( subdataset ) {
       // Add the bands from the vector to the dataset only if a subdataset
       // was requested
       int i;
@@ -724,6 +729,7 @@ GDALDataset *GRIBAPIDataset::Open( GDALOpenInfo * poOpenInfo )
 
 static void GDALDeregister_GRIBAPI(GDALDriver* )
 {
+  // no cleanup needed
 }
 
 /************************************************************************/
@@ -741,10 +747,9 @@ void GDALRegister_GRIBAPI()
     poDriver->SetDescription( "GRIBAPI" );
     poDriver->SetMetadataItem( GDAL_DCAP_RASTER, "YES" );
     poDriver->SetMetadataItem( GDAL_DMD_LONGNAME, "GRIdded Binary (.grb)" );
-    poDriver->SetMetadataItem( GDAL_DMD_HELPTOPIC, "frmt_grib2.html" );
+    poDriver->SetMetadataItem( GDAL_DMD_HELPTOPIC, "frmt_gribapi.html" );
     poDriver->SetMetadataItem( GDAL_DMD_SUBDATASETS, "YES" );
     poDriver->SetMetadataItem( GDAL_DMD_EXTENSION, "grb" );
-    //poDriver->SetMetadataItem( GDAL_DCAP_VIRTUALIO, "YES" );
 
     poDriver->pfnOpen = GRIBAPIDataset::Open;
     poDriver->pfnIdentify = GRIBAPIDataset::Identify;
