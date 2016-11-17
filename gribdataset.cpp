@@ -572,13 +572,11 @@ GDALDataset *GRIBAPIDataset::Open( GDALOpenInfo * poOpenInfo )
 
   const char *pszFilename = poOpenInfo->pszFilename;
   char *subdataset = NULL;
-  long subdatasetLong = 0;
   if( STARTS_WITH_CI(pszFilename, "GRIBAPI:") ) {
     int i;
     for ( i = 8; i<strlen(pszFilename); i++) {
       if (pszFilename[i] == ':') {
         subdataset = strndup(pszFilename+8, i-8);
-        subdatasetLong = atoi(subdataset);
         pszFilename += i + 1;
         break;
       }
