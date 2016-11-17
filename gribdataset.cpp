@@ -217,6 +217,9 @@ CPLErr GRIBAPIRasterBand::LoadMetaData( const char *name_space )
   while( grib_keys_iterator_next( kiter ) ) {
     char value[MAX_VAL_LEN];
     const char* name = grib_keys_iterator_get_name(kiter);
+    if (!strncmp(name, "value", strlen("value")) ||
+        !strncmp(name, "pv", strlen("pv"))) continue;
+
     size_t vlen = MAX_VAL_LEN;
     if ( GRIB_SUCCESS == GetString ( name, value, &vlen ) ) {
       std::ostringstream key;
@@ -597,7 +600,7 @@ GDALDataset *GRIBAPIDataset::Open( GDALOpenInfo * poOpenInfo )
 /* -------------------------------------------------------------------- */
     GRIBAPIDataset *poDS = new GRIBAPIDataset();
 
-    poDS->SetDescription( poOpenInfo->pszFilename );
+    poDS->SetDescription( pszFilename );
 
     poDS->fp = fopen(pszFilename, "r"); 
 
