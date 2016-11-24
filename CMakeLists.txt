@@ -12,5 +12,6 @@ include_directories(${GDAL_INLCUDE_DIR})
 add_library(gdal_GRIBAPI MODULE gribdataset.cpp)
 set_target_properties(gdal_GRIBAPI PROPERTIES PREFIX "")
 target_link_libraries(gdal_GRIBAPI ${GRIBAPI_LIB})
+target_link_libraries(gdal_GRIBAPI ${GDAL_LIBRARY})
 
 install (TARGETS gdal_GRIBAPI DESTINATION lib)
