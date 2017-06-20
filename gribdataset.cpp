@@ -49,6 +49,25 @@ CPL_C_START
 void GDALRegister_GRIBAPI();
 CPL_C_END
 
+#if (GDAL_VERSION_MAJOR <2)
+static int CPLTestBool(const char *s)
+{
+  return strncmp(s, "ON", 2) ? 1 : 0;
+}
+
+static int STARTS_WITH_CI(const char *a, const char *b)
+{
+  const char *pa, *pb;
+  for (pa=a, pb=b; *pa && *pb; pa++, pb++)
+    if (tolower(*pa) != tolower(*pb))
+      return 0;
+  return !(*pb) ? 1 : 0;
+}
+
+#endif
+
+
+
 /************************************************************************/
 /*                              GRIBAPIDataset                          */
 /************************************************************************/
@@ -745,7 +764,9 @@ void GDALRegister_GRIBAPI()
     GDALDriver *poDriver = new GDALDriver();
 
     poDriver->SetDescription( "GRIBAPI" );
+#if (GDAL_VERSION_MAJOR >=2)
     poDriver->SetMetadataItem( GDAL_DCAP_RASTER, "YES" );
+#endif
     poDriver->SetMetadataItem( GDAL_DMD_LONGNAME, "GRIdded Binary (.grb)" );
     poDriver->SetMetadataItem( GDAL_DMD_HELPTOPIC, "frmt_gribapi.html" );
     poDriver->SetMetadataItem( GDAL_DMD_SUBDATASETS, "YES" );
