@@ -272,13 +272,6 @@ static inline double degToRad(double a) {
 CPLErr GRIBAPIRasterBand::GetGeoTransform (double (&padfTransform)[6]) const
 {
   int err;
-  const double degRot = GetDouble( "angleOfRotationInDegrees", &err );
-  if (err) return CE_Failure;
-  if ( degRot != 0 ) {
-    CPLError( CE_Warning, CPLE_NotSupported,
-              "The GRIBAPI driver does not support "
-              "datasets with rotation.\n" );
-  }
   //
   // Longitude in degrees, to be transformed to meters (or degrees in
   // case of latlon).
