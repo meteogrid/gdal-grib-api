@@ -762,7 +762,9 @@ void GDALRegister_GRIBAPI()
 #endif
     poDriver->SetMetadataItem( GDAL_DMD_LONGNAME, "GRIdded Binary (.grb)" );
     poDriver->SetMetadataItem( GDAL_DMD_HELPTOPIC, "frmt_gribapi.html" );
+#if (GDAL_VERSION_MAJOR >= 2 || (GDAL_VERSION_MAJOR == 1 && GDAL_VERSION_MINOR > 6))
     poDriver->SetMetadataItem( GDAL_DMD_SUBDATASETS, "YES" );
+#endif
     poDriver->SetMetadataItem( GDAL_DMD_EXTENSION, "grb" );
 
     poDriver->pfnOpen = GRIBAPIDataset::Open;
